@@ -27,13 +27,25 @@ func TestStaticIsUpToDate(t *testing.T) {
 		t.Errorf("error while generating static.go: %v\n", err)
 	}
 
-	if bytes.Compare(oldBuf, newBuf) != 0 {
+	// gen.go stamps time.Now().UTC().Year() into the license header of the
+	// generated file, so the first line (the "// Copyright" line) differs in
+	// any year other than the one static.go was generated in. Compare the
+	// rest of the file strictly.
+	if bytes.Compare(skipFirstLine(oldBuf), skipFirstLine(newBuf)) != 0 {
 		t.Error(`static.go is stale.  Run:
   $ go generate golang.org/x/tools/godoc/static
   $ git diff
 to see the differences.`)
 
 	}
+}
+
+// skipFirstLine returns b without its first line.
+func skipFirstLine(b []byte) []byte {
+	if i := bytes.IndexByte(b, '\n'); i >= 0 {
+		return b[i+1:]
+	}
+	return nil
 }
 
 // TestAppendQuote ensures that AppendQuote produces a valid literal.

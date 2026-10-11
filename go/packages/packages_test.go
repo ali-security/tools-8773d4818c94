@@ -1116,6 +1116,9 @@ const A = 1
 }
 
 func TestAdHocOverlays(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("golang.org/issue/31344: ad-hoc command-line-arguments packages are unreliable on windows")
+	}
 	testenv.NeedsTool(t, "go")
 
 	// This test doesn't use packagestest because we are testing ad-hoc packages,
@@ -2025,6 +2028,9 @@ func testBasicXTest(t *testing.T, exporter packagestest.Exporter) {
 
 func TestErrorMissingFile(t *testing.T) { packagestest.TestAll(t, testErrorMissingFile) }
 func testErrorMissingFile(t *testing.T, exporter packagestest.Exporter) {
+	if runtime.GOOS == "windows" {
+		t.Skip("golang.org/issue/31344: ad-hoc command-line-arguments packages are unreliable on windows")
+	}
 	exported := packagestest.Export(t, exporter, []packagestest.Module{{
 		Name: "golang.org/fake",
 		Files: map[string]interface{}{
@@ -2053,6 +2059,9 @@ func TestReturnErrorWhenUsingNonGoFiles(t *testing.T) {
 	packagestest.TestAll(t, testReturnErrorWhenUsingNonGoFiles)
 }
 func testReturnErrorWhenUsingNonGoFiles(t *testing.T, exporter packagestest.Exporter) {
+	if runtime.GOOS == "windows" {
+		t.Skip("golang.org/issue/31344: ad-hoc command-line-arguments packages are unreliable on windows")
+	}
 	exported := packagestest.Export(t, exporter, []packagestest.Module{{
 		Name: "golang.org/gopatha",
 		Files: map[string]interface{}{

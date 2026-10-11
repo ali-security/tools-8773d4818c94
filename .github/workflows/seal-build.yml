@@ -1,0 +1,141 @@
+# Seal fork build for golang.org/x/tools v0.0.0-20191012152004-8de300cfc20a.
+# Upstream has no GitHub Actions CI (Gerrit + the Go build dashboard), so this
+# workflow is authored from scratch: it packs the module zip exactly as the Go
+# module proxy does and runs the full `go test ./...` suite on Linux and Windows.
+name: seal-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional go test package/flag selector; empty runs ./...'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  module-zip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build module zip helper
+        run: |
+          set -eux
+          # Build outside the checkout so the helper's go.mod/go.sum never
+          # touch the module tree being zipped.
+          HELPER=$(mktemp -d)
+          cp .github/create_mod.go "$HELPER/"
+          cd "$HELPER"
+          go mod init example.com/mod
+          go get golang.org/x/mod@v0.24.0
+          go build -o "$RUNNER_TEMP/create_mod" .
+
+      - name: Create module zip
+        run: |
+          set -eux
+          mkdir -p "$RUNNER_TEMP/zipsrc" "$RUNNER_TEMP/out"
+          tar -c --exclude=.git --exclude=.github -C "$GITHUB_WORKSPACE" . | tar -x -C "$RUNNER_TEMP/zipsrc"
+          test ! -e "$RUNNER_TEMP/zipsrc/.github"
+          test -f "$RUNNER_TEMP/zipsrc/go.mod"
+          "$RUNNER_TEMP/create_mod" golang.org/x/tools v0.0.0-20191012152004-8de300cfc20a "$RUNNER_TEMP/zipsrc" "$RUNNER_TEMP/out/v0.0.0-20191012152004-8de300cfc20a.zip"
+          ENTRIES=$(unzip -Z1 "$RUNNER_TEMP/out/v0.0.0-20191012152004-8de300cfc20a.zip" | wc -l)
+          echo "module zip entries: $ENTRIES"
+          # The public proxy zip has 1235 entries (gopls/ is a nested module
+          # and is excluded automatically by zip.CreateFromDir).
+          test "$ENTRIES" -eq 1235
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: ${{ runner.temp }}/out/v0.0.0-20191012152004-8de300cfc20a.zip
+          if-no-files-found: error
+
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            go: '1.12.17'
+          # Go 1.12 on Windows flakes go/packages module tests with
+          # "rename ... used by another process" (no robustio retries before 1.13).
+          - os: windows-latest
+            go: '1.13.15'
+    defaults:
+      run:
+        shell: bash
+    env:
+      GO111MODULE: 'on'
+      # Go 1.12 rejects a comma-separated GOPROXY list.
+      GOPROXY: https://proxy.golang.org
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      # Go 1.12/1.13's prebuilt runtime/cgo links against msvcrt (__iob_func);
+      # the runner's C:\mingw64 toolchain is UCRT and fails to link the
+      # cmd/stringer cgo test, so put an msvcrt MINGW64 gcc first on PATH.
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        id: msys2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+
+      - name: Configure Windows toolchain and temp dir
+        if: runner.os == 'Windows'
+        run: |
+          set -eux
+          echo '${{ steps.msys2.outputs.msys2-location }}\mingw64\bin' >> "$GITHUB_PATH"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Go version
+        run: |
+          set -eux
+          go version
+          go env
+
+      - name: Build
+        run: |
+          set -eux
+          go build ./...
+
+      - name: Test
+        run: |
+          set -eux
+          set -o pipefail
+          # -p 1: cmd/godoc TestWebIndex has a 2m search-index deadline that
+          # times out when packages are tested in parallel.
+          go test -v -p 1 ${{ inputs.test-filter || './...' }} 2>&1 | tee "$RUNNER_TEMP/go-test.log"
+
+      - name: Test summary
+        if: always()
+        run: |
+          set -eu
+          LOG="$RUNNER_TEMP/go-test.log"
+          test -f "$LOG"
+          awk '
+            /--- PASS/ { pass++ }
+            /--- FAIL/ { fail++ }
+            /--- SKIP/ { skip++ }
+            /^ok /     { okpkg++ }
+            /^FAIL/    { failpkg++ }
+            END {
+              printf "packages ok: %d, packages FAIL: %d\n", okpkg, failpkg
+              printf "TEST SUMMARY: %d passed, %d failed, %d skipped\n", pass, fail, skip
+            }
+          ' "$LOG"
